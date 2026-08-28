@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c)](https://pytorch.org)
-[![Tests](https://img.shields.io/badge/tests-14%20passed-brightgreen)](#-tests-unitarios)
+[![Tests](https://img.shields.io/badge/tests-39%20passed-brightgreen)](#-tests-unitarios)
 
 ---
 
@@ -43,7 +43,8 @@ pip install torch numpy safetensors
 4. **Modelos Híbridos Universales:** Combinación de capas BDA y FlashAttention en proporciones configurables (ej. 4 BDA : 1 FlashAttention).
 5. **Modelos Multimodales (VLM):** Fusión de visión (TBV) + proyección 2D + razonamiento autorregresivo de lenguaje (BDA / Transformer / Híbrido).
 6. **Mixture of Experts (MoE) Nativo:** Enrutador Top-$k$ disperso con pérdida auxiliar de balanceo de carga (`aux_loss`), compatible con todas las arquitecturas.
-7. **Motor Multi-Formato:** Guardado y carga en `.bueorm` (contenedor autocontenido optimizado), `.safetensors`, `.gguf` (v3 binario puro) y `.pt`.
+7. **Generación de Imagen Nativa (TBV):** Texto → Z latente → TBV decode → Imagen. Disponible en 3 modalidades: **TTI** (texto-a-imagen simple), **lenguaje con generación** (cualquier backbone BDA/Transformer/Híbrido/MoE), y **VLM Any-to-Any** (visión↔texto↔imagen).
+8. **Motor Multi-Formato:** Guardado y carga en `.bueorm` (contenedor autocontenido optimizado), `.safetensors`, `.gguf` (v3 binario puro) y `.pt`.
 
 ## 📁 Estructura del Proyecto
 
@@ -51,14 +52,15 @@ pip install torch numpy safetensors
 BMM/
 ├── bueorm/               # Framework principal unificado
 │   ├── core/             # Serialización, GGUF, cuantización, registro
-│   ├── models/           # BDALanguageModel, HybridLM, VLM, factory
+│   ├── generation/       # TextToLatentHead, LatentToImageDecoder (TBV)
+│   ├── models/           # BDA, Hybrid, Transformer, VLM, TTI, GenerativeVLM
 │   ├── moe/              # Router y capas MoE
 │   ├── trainer/          # Trainer y TrainingArguments
 │   └── utils/            # ModelBuilder y utilidades
 ├── BDA/                  # Implementación BDA pura + validaciones
 ├── TBV/                  # Implementación TBV + proyector 2D
 ├── transformer/          # Transformer con FlashAttention/GQA/RoPE
-├── tests/                # Suite maestra (14 tests)
+├── tests/                # Suite maestra (39 tests: 14 clásicos + 25 generación)
 ├── pyproject.toml
 ├── LICENSE               # MIT
 └── README.md
@@ -178,13 +180,95 @@ trainer = bueorm.Trainer(
 trainer.train()
 ```
 
+### 8. Generación de Imagen — Sistema Simple Texto → TBV (Punto 1)
+```python
+# TTI: cualquier backbone BDA / Transformer / Híbrido (+ MoE)
+tti = bueorm.create_model("tti", d_model=256, n_heads=4, n_layers=6, tti_backbone="hybrid", image_size=64, patch_size=8, tbv_dim=32)
+# o presets
+tti = bueorm.create_model("tti", config=bueorm.BueormConfig.tti_small(backbone="bda"))
+
+input_ids = torch.randint(0, 1000, (2, 16))
+target_images = torch.randn(2, 3, 64, 64)
+
+# Forward con loss
+image_pred, loss, z = tti(input_ids, target_images=target_images)
+
+# Inferencia
+image = tti.generate_image(torch.tensor([[10, 20, 30]]))  # (1,3,64,64)
+```
+
+### 9. Modelos de Texto Nativos con Generación de Imagen (Puntos 2-3) — Versátil con MoE
+```python
+# BDA, Transformer o Híbrido + MoE, todos con generación — opt-in, no rompe modelos sin flag
+# BDA con imagen
+bda_gen = bueorm.create_model("bda", d_model=256, n_heads=4, n_layers=6, enable_image_gen=True, image_size=64, patch_size=8, tbv_dim=32)
+# Transformer con imagen
+trans_gen = bueorm.create_model("transformer", d_model=256, n_heads=4, n_layers=6, enable_image_gen=True, image_size=64, patch_size=8, tbv_dim=32)
+# Híbrido + MoE con imagen (cualquier patrón y top-k)
+hybrid_moe_gen = bueorm.create_model(
+    "hybrid",
+    hybrid_pattern="4bda:1attn",
+    d_model=256, n_heads=4, n_layers=6,
+    use_moe=True, moe_config=bueorm.MoEConfig(num_experts=8, top_k=2),
+    enable_image_gen=True, image_size=64, patch_size=8, tbv_dim=32
+)
+
+# Forward conjunto texto + imagen (loss combinada CE + MSE)
+input_ids = torch.randint(0, 1000, (2, 32))
+targets = torch.randint(0, 1000, (2, 32))
+target_images = torch.randn(2, 3, 64, 64)
+logits, loss, _ = bda_gen(input_ids, targets=targets, target_images=target_images)
+
+# Generación dual preservando API original
+text = bda_gen.generate(input_ids, max_new_tokens=30)      # texto
+image = bda_gen.generate_image(input_ids)                  # imagen desde texto
+```
+
+### 10. VLM Any-to-Any: Visión ↔ Texto ↔ Imagen
+```python
+# VLM bidireccional con generación (TBV + Hybrid + MoE opcional)
+vlm_gen = bueorm.create_model(
+    "vlm",
+    d_model=256, n_heads=4, n_layers=6,
+    image_size=64, patch_size=8, tbv_dim=32,
+    hybrid_pattern="3bda:1attn",
+    use_moe=True, moe_config=bueorm.MoEConfig(num_experts=8, top_k=2),
+    enable_image_gen=True
+)
+
+images = torch.randn(2, 3, 64, 64)
+input_ids = torch.randint(0, 1000, (2, 16))
+targets = torch.randint(0, 1000, (2, 16))
+target_images = torch.randn(2, 3, 64, 64)
+
+# Modos:
+logits, loss, _ = vlm_gen(input_ids, images=images, targets=targets)  # imagen+texto -> texto
+logits, loss, _ = vlm_gen(input_ids, images=images, targets=targets, target_images=target_images)  # joint
+image = vlm_gen.generate_image(input_ids)                     # texto -> imagen
+image2 = vlm_gen.generate_image(input_ids, images=images)     # imagen+texto -> imagen (edición condicionada)
+text = vlm_gen.generate(input_ids, images=images, max_new_tokens=30)  # imagen+texto -> texto
+
+# Builder escalable (lego)
+model = (bueorm.ModelBuilder("any-to-any")
+    .with_language_hybrid(pattern="4bda:1attn", d_model=256, n_heads=4, n_layers=6)
+    .with_moe(num_experts=8, top_k=2)
+    .with_image_generation(image_size=64, patch_size=8, tbv_dim=32)
+    .build())
+```
+
+> **Diseño no destructivo:** `enable_image_gen=False` por defecto. Sin el flag obtienes exactamente los mismos modelos BDA/Transformer/Híbrido/VLM/MoE que antes. Con `enable_image_gen=True` añades cabeza `TextToLatentHead` + decoder TBV compartido sin tocar pesos ni API de texto.
+
 ---
 
 ## 🧪 Tests Unitarios
 
 ```bash
-# Suite completa (14 tests - BDA, TBV, Transformer, Hybrid, MoE, VLM, serialización, cuantización)
+# Suite completa (39 tests: 14 clásicos + 25 generación)
 python -m pytest tests/ -v
+# Solo clásicos
+python -m pytest tests/test_bueorm_framework.py -v
+# Solo generación imagen
+python -m pytest tests/test_image_generation.py -v
 
 # Tests por módulo
 python -m pytest BDA/tests/ -v

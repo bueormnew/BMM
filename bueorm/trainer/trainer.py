@@ -113,23 +113,52 @@ class Trainer:
                 # Move batch to device
                 batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
-                # Forward pass
-                if hasattr(self.model, "reconstruct") and "images" in batch:
-                    # Vision TBV Training
+                # Forward pass — supports legacy + generative (text->image, unified)
+                if "target_images" in batch and "input_ids" in batch and hasattr(self.model, "generate_image"):
+                    # Generative training: text -> image (TTI, language_with_image, generative_vlm)
+                    input_ids = batch["input_ids"]
+                    target_images = batch["target_images"]
+                    targets = batch.get("targets", None)
+                    images = batch.get("images", None)  # optional context image for VLM
+                    # Dispatch per model signature
+                    if images is not None:
+                        # Generative VLM: can have both images context + target_images
+                        result = self.model(input_ids=input_ids, images=images, targets=targets, target_images=target_images)
+                    elif targets is not None:
+                        # Language with image gen: joint text+image loss
+                        result = self.model(input_ids=input_ids, targets=targets, target_images=target_images)
+                    else:
+                        # Pure TTI: text->image only
+                        # TextToImageModel returns (image_pred, loss, z)
+                        result = self.model(input_ids=input_ids, target_images=target_images)
+                    # result is (logits/image_pred, loss, ...), loss at index 1
+                    loss = result[1]
+                    if loss is None:
+                        raise ValueError("Generative model returned None loss — check batch contains valid target_images")
+                elif hasattr(self.model, "reconstruct") and "images" in batch and "input_ids" not in batch:
+                    # Vision TBV Training (pure)
                     images = batch["images"]
                     rec = self.model.reconstruct(images)
                     loss = nn.functional.mse_loss(rec, images)
                 elif "images" in batch and "input_ids" in batch:
-                    # Multimodal VLM Training
+                    # Multimodal VLM Training (legacy, also supports generative VLM without target_images)
                     images = batch["images"]
                     input_ids = batch["input_ids"]
                     targets = batch.get("targets", input_ids)
-                    _, loss, _ = self.model(input_ids=input_ids, images=images, targets=targets)
+                    target_images = batch.get("target_images", None)
+                    if target_images is not None and hasattr(self.model, "generate_image"):
+                        _, loss, _ = self.model(input_ids=input_ids, images=images, targets=targets, target_images=target_images)
+                    else:
+                        _, loss, _ = self.model(input_ids=input_ids, images=images, targets=targets)
                 else:
-                    # Language Model Training
+                    # Language Model Training (including generative language without target_images)
                     input_ids = batch.get("input_ids", next(iter(batch.values())))
                     targets = batch.get("targets", input_ids)
-                    _, loss, _ = self.model(input_ids=input_ids, targets=targets)
+                    target_images = batch.get("target_images", None)
+                    if target_images is not None and hasattr(self.model, "generate_image"):
+                        _, loss, _ = self.model(input_ids=input_ids, targets=targets, target_images=target_images)
+                    else:
+                        _, loss, _ = self.model(input_ids=input_ids, targets=targets)
 
                 # Gradient accumulation
                 loss = loss / self.args.gradient_accumulation_steps

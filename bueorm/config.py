@@ -42,6 +42,50 @@ class MoEConfig:
 
 
 @dataclass
+class ImageGenConfig:
+    """
+    Configuration for Text-to-Image & Unified Image Generation.
+    Enables any BDA / Transformer / Hybrid / MoE / VLM backbone to generate
+    TBV latents Z and decode them to images via shared TBV decoder.
+
+    Attributes:
+        enabled (bool): Master switch. Default False (opt-in, no breakage).
+        image_size (int): Target image resolution (H=W). Default 64.
+        patch_size (int): TBV patch size. Default 8 -> grid 8x8 for 64px.
+        tbv_dim (int): Latent channel dim D for Z. Default 32.
+        tbv_num_blocks (int): Number of shared T-Blocks in TBV decoder. Default 4.
+        in_channels (int): Output image channels. Default 3.
+        head_hidden_dim (Optional[int]): Hidden dim of text->latent MLP. Default d_model.
+        pooling (str): How to pool text hidden states: 'mean', 'last', 'max'. Default 'mean'.
+        loss_type (str): 'mse' or 'l1'. Default 'mse'.
+        loss_weight (float): Weight for image loss when co-training with text. Default 1.0.
+        train_decoder (bool): Whether TBV decoder weights are trainable. Default True.
+        backbone (str): For TTI standalone: which text backbone to use ('bda','transformer','hybrid'). Default 'bda'.
+    """
+    enabled: bool = False
+    image_size: int = 64
+    patch_size: int = 8
+    tbv_dim: int = 32
+    tbv_num_blocks: int = 4
+    in_channels: int = 3
+    head_hidden_dim: Optional[int] = None
+    pooling: str = "mean"
+    loss_type: str = "mse"
+    loss_weight: float = 1.0
+    train_decoder: bool = True
+    backbone: str = "bda"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ImageGenConfig":
+        valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in data.items() if k in valid_keys}
+        return cls(**filtered)
+
+
+@dataclass
 class VLMConfig:
     """
     Configuration for Vision-Language Models (VLM).
@@ -134,6 +178,12 @@ class BueormConfig:
     is_multimodal: bool = False
     vlm_config: Optional[VLMConfig] = None
 
+    # Image Generation (text -> Z -> TBV -> image) – opt-in, backward compatible
+    enable_image_gen: bool = False
+    image_gen_config: Optional[ImageGenConfig] = None
+    # For standalone TTI models: which backbone to use as text encoder
+    tti_backbone: str = "bda"  # 'bda' | 'transformer' | 'hybrid'
+
     def __post_init__(self):
         if self.n_kv_heads is None:
             self.n_kv_heads = self.n_heads
@@ -149,12 +199,43 @@ class BueormConfig:
         elif isinstance(self.vlm_config, dict):
             self.vlm_config = VLMConfig.from_dict(self.vlm_config)
 
+        if self.enable_image_gen and self.image_gen_config is None:
+            self.image_gen_config = ImageGenConfig(
+                enabled=True,
+                image_size=self.image_size,
+                patch_size=self.patch_size,
+                tbv_dim=self.tbv_dim,
+                tbv_num_blocks=self.tbv_num_blocks,
+                in_channels=self.in_channels,
+            )
+        elif isinstance(self.image_gen_config, dict):
+            self.image_gen_config = ImageGenConfig.from_dict(self.image_gen_config)
+        # Ensure enabled flag mirrors config if set
+        if self.image_gen_config is not None and self.image_gen_config.enabled:
+            self.enable_image_gen = True
+        # Sync top-level vision params to image gen if still at defaults (avoid mismatch)
+        if self.image_gen_config is not None and self.enable_image_gen:
+            # If top-level was customized but image_gen stayed at default 64/8/32, sync it
+            if self.image_gen_config.image_size == 64 and self.image_size != 64:
+                self.image_gen_config.image_size = self.image_size
+            if self.image_gen_config.patch_size == 8 and self.patch_size != 8:
+                self.image_gen_config.patch_size = self.patch_size
+            if self.image_gen_config.tbv_dim == 32 and self.tbv_dim != 32:
+                # Only sync if tbv_dim default 32 and parent differs
+                # Parent default is 64, so only sync when parent was explicitly set to non-64
+                if self.tbv_dim != 64:
+                    self.image_gen_config.tbv_dim = self.tbv_dim
+            if self.image_gen_config.in_channels == 3 and self.in_channels != 3:
+                self.image_gen_config.in_channels = self.in_channels
+
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         if self.moe_config is not None:
             data["moe_config"] = self.moe_config.to_dict()
         if self.vlm_config is not None:
             data["vlm_config"] = self.vlm_config.to_dict()
+        if self.image_gen_config is not None:
+            data["image_gen_config"] = self.image_gen_config.to_dict()
         return data
 
     @classmethod
@@ -162,6 +243,7 @@ class BueormConfig:
         raw = data.copy()
         moe_raw = raw.pop("moe_config", None)
         vlm_raw = raw.pop("vlm_config", None)
+        img_raw = raw.pop("image_gen_config", None)
         
         valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in raw.items() if k in valid_keys}
@@ -171,6 +253,8 @@ class BueormConfig:
             obj.moe_config = MoEConfig.from_dict(moe_raw) if isinstance(moe_raw, dict) else moe_raw
         if vlm_raw:
             obj.vlm_config = VLMConfig.from_dict(vlm_raw) if isinstance(vlm_raw, dict) else vlm_raw
+        if img_raw:
+            obj.image_gen_config = ImageGenConfig.from_dict(img_raw) if isinstance(img_raw, dict) else img_raw
         return obj
 
     def to_json(self, indent: int = 2) -> str:
@@ -256,4 +340,141 @@ class BueormConfig:
         )
         for k, v in kwargs.items():
             setattr(cfg, k, v)
+        return cfg
+
+    # --- Image Generation Presets ---
+
+    @classmethod
+    def tti_small(cls, backbone: str = "bda", **kwargs) -> "BueormConfig":
+        """Text-to-Image standalone (punto 1): texto -> Z -> TBV -> imagen."""
+        cfg = cls(
+            model_type="tti",
+            tti_backbone=backbone,
+            d_model=128,
+            n_heads=4,
+            n_layers=4,
+            vocab_size=1000,
+            image_size=64,
+            patch_size=8,
+            tbv_dim=32,
+            tbv_num_blocks=4,
+            enable_image_gen=True,
+            image_gen_config=ImageGenConfig(
+                enabled=True,
+                image_size=kwargs.get("image_size", 64),
+                patch_size=kwargs.get("patch_size", 8),
+                tbv_dim=kwargs.get("tbv_dim", 32),
+                backbone=backbone,
+            ),
+        )
+        for k, v in kwargs.items():
+            if hasattr(cfg, k):
+                setattr(cfg, k, v)
+            elif hasattr(cfg.image_gen_config, k):
+                setattr(cfg.image_gen_config, k, v)
+        # Sync heads if d_model/n_heads changed without explicit n_kv_heads
+        if "n_heads" in kwargs and "n_kv_heads" not in kwargs:
+            cfg.n_kv_heads = cfg.n_heads
+        if ("d_model" in kwargs or "n_heads" in kwargs) and cfg.n_heads > 0:
+            if "head_dim" not in kwargs:
+                cfg.head_dim = cfg.d_model // cfg.n_heads
+            if "d_k" not in kwargs:
+                cfg.d_k = cfg.d_model // cfg.n_heads
+            if "d_v" not in kwargs:
+                cfg.d_v = cfg.d_model // cfg.n_heads
+        return cfg
+
+    @classmethod
+    def bda_with_image_gen(cls, **kwargs) -> "BueormConfig":
+        """BDA nativo con generación de imagen (punto 2-3)."""
+        cfg = cls(model_type="bda", d_model=256, n_heads=4, n_layers=6, enable_image_gen=True,
+                  image_gen_config=ImageGenConfig(enabled=True, backbone="bda"))
+        for k, v in kwargs.items():
+            if hasattr(cfg, k):
+                setattr(cfg, k, v)
+            if hasattr(cfg.image_gen_config, k):
+                setattr(cfg.image_gen_config, k, v)
+            # Sync common vision fields
+            if k in ("image_size", "patch_size", "tbv_dim", "tbv_num_blocks", "in_channels"):
+                setattr(cfg.image_gen_config, k, v)
+        if "n_heads" in kwargs and "n_kv_heads" not in kwargs:
+            cfg.n_kv_heads = cfg.n_heads
+        if ("d_model" in kwargs or "n_heads" in kwargs) and cfg.n_heads > 0:
+            if "head_dim" not in kwargs:
+                cfg.head_dim = cfg.d_model // cfg.n_heads
+            if "d_k" not in kwargs:
+                cfg.d_k = cfg.d_model // cfg.n_heads
+            if "d_v" not in kwargs:
+                cfg.d_v = cfg.d_model // cfg.n_heads
+        return cfg
+
+    @classmethod
+    def transformer_with_image_gen(cls, **kwargs) -> "BueormConfig":
+        cfg = cls(model_type="transformer", d_model=256, n_heads=4, n_layers=6, enable_image_gen=True,
+                  image_gen_config=ImageGenConfig(enabled=True, backbone="transformer"))
+        for k, v in kwargs.items():
+            if hasattr(cfg, k):
+                setattr(cfg, k, v)
+            if hasattr(cfg.image_gen_config, k):
+                setattr(cfg.image_gen_config, k, v)
+            if k in ("image_size", "patch_size", "tbv_dim", "tbv_num_blocks", "in_channels"):
+                setattr(cfg.image_gen_config, k, v)
+        if "n_heads" in kwargs and "n_kv_heads" not in kwargs:
+            cfg.n_kv_heads = cfg.n_heads
+        if ("d_model" in kwargs or "n_heads" in kwargs) and cfg.n_heads > 0:
+            if "head_dim" not in kwargs:
+                cfg.head_dim = cfg.d_model // cfg.n_heads
+        return cfg
+
+    @classmethod
+    def hybrid_with_image_gen(cls, pattern: str = "4bda:1attn", **kwargs) -> "BueormConfig":
+        cfg = cls(model_type="hybrid", d_model=256, n_heads=4, n_layers=6, hybrid_pattern=pattern,
+                  enable_image_gen=True, image_gen_config=ImageGenConfig(enabled=True, backbone="hybrid"))
+        for k, v in kwargs.items():
+            if hasattr(cfg, k):
+                setattr(cfg, k, v)
+            if hasattr(cfg.image_gen_config, k):
+                setattr(cfg.image_gen_config, k, v)
+            if k in ("image_size", "patch_size", "tbv_dim", "tbv_num_blocks", "in_channels"):
+                setattr(cfg.image_gen_config, k, v)
+        if "n_heads" in kwargs and "n_kv_heads" not in kwargs:
+            cfg.n_kv_heads = cfg.n_heads
+        if ("d_model" in kwargs or "n_heads" in kwargs) and cfg.n_heads > 0:
+            if "head_dim" not in kwargs:
+                cfg.head_dim = cfg.d_model // cfg.n_heads
+            if "d_k" not in kwargs:
+                cfg.d_k = cfg.d_model // cfg.n_heads
+            if "d_v" not in kwargs:
+                cfg.d_v = cfg.d_model // cfg.n_heads
+        return cfg
+
+    @classmethod
+    def vlm_with_image_gen(cls, **kwargs) -> "BueormConfig":
+        """VLM bidireccional con generación (visión<->texto<->imagen)."""
+        cfg = cls.vlm_bda(enable_image_gen=True,
+                          image_gen_config=ImageGenConfig(enabled=True, backbone="hybrid"))
+        cfg.is_multimodal = True
+        for k, v in kwargs.items():
+            if hasattr(cfg, k):
+                setattr(cfg, k, v)
+            if hasattr(cfg.image_gen_config, k):
+                setattr(cfg.image_gen_config, k, v)
+            if k in ("image_size", "patch_size", "tbv_dim", "tbv_num_blocks", "in_channels"):
+                setattr(cfg.image_gen_config, k, v)
+                # For VLM, also keep top-level in sync for encoder
+                if k == "image_size":
+                    cfg.image_size = v
+                if k == "patch_size":
+                    cfg.patch_size = v
+                if k == "tbv_dim":
+                    cfg.tbv_dim = v
+        if "n_heads" in kwargs and "n_kv_heads" not in kwargs:
+            cfg.n_kv_heads = cfg.n_heads
+        if ("d_model" in kwargs or "n_heads" in kwargs) and cfg.n_heads > 0:
+            if "head_dim" not in kwargs:
+                cfg.head_dim = cfg.d_model // cfg.n_heads
+            if "d_k" not in kwargs:
+                cfg.d_k = cfg.d_model // cfg.n_heads
+            if "d_v" not in kwargs:
+                cfg.d_v = cfg.d_model // cfg.n_heads
         return cfg

@@ -6,12 +6,15 @@ Empowers creation, hybrid composition, multimodal coupling (VLM), Mixture of Exp
 multi-format serialization (.bueorm, .safetensors, .gguf, .pt), quantization, and training.
 """
 
-from bueorm.config import BueormConfig, MoEConfig, VLMConfig
+from bueorm.config import BueormConfig, MoEConfig, VLMConfig, ImageGenConfig
 from bueorm.models.bda_lm import BDALanguageModel
 from bueorm.models.tbv_vision import TBVVisionModel
 from bueorm.models.transformer_lm import TransformerLM
 from bueorm.models.hybrid_lm import HybridLanguageModel
 from bueorm.models.multimodal_vlm import BueormVLM
+from bueorm.models.text_to_image import TextToImageModel
+from bueorm.models.generative_language import BDAWithImageGen, TransformerWithImageGen, HybridWithImageGen
+from bueorm.models.generative_vlm import GenerativeVLM
 from bueorm.models.factory import BueormModel, create_model
 from bueorm.utils.builder import ModelBuilder, calculate_active_vs_total_params
 
@@ -39,6 +42,7 @@ __all__ = [
     "BueormConfig",
     "MoEConfig",
     "VLMConfig",
+    "ImageGenConfig",
     # Builder & Tools
     "ModelBuilder",
     "calculate_active_vs_total_params",
@@ -50,6 +54,11 @@ __all__ = [
     "TransformerLM",
     "HybridLanguageModel",
     "BueormVLM",
+    "TextToImageModel",
+    "BDAWithImageGen",
+    "TransformerWithImageGen",
+    "HybridWithImageGen",
+    "GenerativeVLM",
     # Core & Serialization
     "save_model",
     "load_model",

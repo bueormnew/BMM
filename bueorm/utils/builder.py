@@ -7,7 +7,7 @@ from typing import Union, Optional, List, Dict, Any
 import torch
 import torch.nn as nn
 
-from bueorm.config import BueormConfig, MoEConfig, VLMConfig
+from bueorm.config import BueormConfig, MoEConfig, VLMConfig, ImageGenConfig
 from bueorm.models.factory import BueormModel
 
 
@@ -126,6 +126,61 @@ class ModelBuilder:
             num_experts=num_experts,
             top_k=top_k,
             aux_loss_coef=aux_loss_coef
+        )
+        return self
+
+    def with_image_generation(
+        self,
+        image_size: int = 64,
+        patch_size: int = 8,
+        tbv_dim: int = 32,
+        tbv_num_blocks: int = 4,
+        backbone: str = "bda",
+        loss_weight: float = 1.0,
+        pooling: str = "mean",
+    ) -> "ModelBuilder":
+        """Enables text->image generation via TBV (opt-in, escalable a cualquier backbone)."""
+        self.config.enable_image_gen = True
+        self.config.image_gen_config = ImageGenConfig(
+            enabled=True,
+            image_size=image_size,
+            patch_size=patch_size,
+            tbv_dim=tbv_dim,
+            tbv_num_blocks=tbv_num_blocks,
+            backbone=backbone,
+            loss_weight=loss_weight,
+            pooling=pooling,
+        )
+        return self
+
+    def with_text_to_image(
+        self,
+        backbone: str = "bda",
+        image_size: int = 64,
+        patch_size: int = 8,
+        tbv_dim: int = 32,
+        d_model: int = 128,
+        n_heads: int = 4,
+        n_layers: int = 4,
+        vocab_size: int = 1000,
+    ) -> "ModelBuilder":
+        """Construye modelo Text-to-Image standalone (punto 1)."""
+        self.config.model_type = "tti"
+        self.config.tti_backbone = backbone
+        self.config.d_model = d_model
+        self.config.n_heads = n_heads
+        self.config.n_layers = n_layers
+        self.config.vocab_size = vocab_size
+        self.config.image_size = image_size
+        self.config.patch_size = patch_size
+        self.config.tbv_dim = tbv_dim
+        self.config.enable_image_gen = True
+        self.config.image_gen_config = ImageGenConfig(
+            enabled=True,
+            image_size=image_size,
+            patch_size=patch_size,
+            tbv_dim=tbv_dim,
+            backbone=backbone,
         )
         return self
 
