@@ -2,7 +2,38 @@
 
 **Bueorm** es una biblioteca modular de arquitecturas neuronales avanzadas y framework de modelos de lenguaje, visión y multimodalidad desarrollado por **Gerson Fabián Buenahora Ormaza (BUEORM)**.
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c)](https://pytorch.org)
+[![Tests](https://img.shields.io/badge/tests-14%20passed-brightgreen)](#-tests-unitarios)
+
 ---
+
+## 📋 Requisitos
+
+- Python 3.10+
+- PyTorch >= 2.0.0
+- NumPy >= 1.20.0
+- safetensors >= 0.4.0
+
+Dependencias de desarrollo: `pytest >= 7.0.0`
+
+## 📦 Instalación
+
+```bash
+# Clonar el repositorio
+git clone https://github.com/bueormnew/BMM.git
+cd BMM
+
+# Instalación editable (recomendado para desarrollo)
+pip install -e .
+
+# Con dependencias de desarrollo
+pip install -e ".[dev]"
+
+# Instalación directa
+pip install torch numpy safetensors
+```
 
 ## 🌟 Arquitecturas Integradas
 
@@ -13,6 +44,25 @@
 5. **Modelos Multimodales (VLM):** Fusión de visión (TBV) + proyección 2D + razonamiento autorregresivo de lenguaje (BDA / Transformer / Híbrido).
 6. **Mixture of Experts (MoE) Nativo:** Enrutador Top-$k$ disperso con pérdida auxiliar de balanceo de carga (`aux_loss`), compatible con todas las arquitecturas.
 7. **Motor Multi-Formato:** Guardado y carga en `.bueorm` (contenedor autocontenido optimizado), `.safetensors`, `.gguf` (v3 binario puro) y `.pt`.
+
+## 📁 Estructura del Proyecto
+
+```
+BMM/
+├── bueorm/               # Framework principal unificado
+│   ├── core/             # Serialización, GGUF, cuantización, registro
+│   ├── models/           # BDALanguageModel, HybridLM, VLM, factory
+│   ├── moe/              # Router y capas MoE
+│   ├── trainer/          # Trainer y TrainingArguments
+│   └── utils/            # ModelBuilder y utilidades
+├── BDA/                  # Implementación BDA pura + validaciones
+├── TBV/                  # Implementación TBV + proyector 2D
+├── transformer/          # Transformer con FlashAttention/GQA/RoPE
+├── tests/                # Suite maestra (14 tests)
+├── pyproject.toml
+├── LICENSE               # MIT
+└── README.md
+```
 
 ---
 
@@ -132,7 +182,44 @@ trainer.train()
 
 ## 🧪 Tests Unitarios
 
-Para ejecutar toda la suite de pruebas del framework:
 ```bash
+# Suite completa (14 tests - BDA, TBV, Transformer, Hybrid, MoE, VLM, serialización, cuantización)
 python -m pytest tests/ -v
+
+# Tests por módulo
+python -m pytest BDA/tests/ -v
+python -m pytest TBV/tests/ -v
+python -m pytest transformer/tests/ -v
+
+# Benchmark comparativo de 5 arquitecturas
+python benchmark_5_models.py
+
+# Entrenamiento multimodal demo
+python train_multimodal_bda_tbv.py
+```
+
+## 📖 Documentación Adicional
+
+- `BDA/BUEORM_Delta_Attention_Technical_Spec (1).md` — Especificación técnica completa de BDA
+- `BDA/validation/` — 6 validaciones de estabilidad y equivalencia numérica
+
+## 📄 Licencia
+
+Este proyecto está bajo licencia **MIT** — ver [LICENSE](LICENSE) para detalles.
+
+Copyright (c) 2026 Gerson Fabián Buenahora Ormaza (BUEORM)
+
+## 👤 Autor
+
+**Gerson Fabián Buenahora Ormaza (BUEORM)** — [GitHub @bueormnew](https://github.com/bueormnew)
+
+Si usas Bueorm en tu investigación, por favor cita:
+
+```bibtex
+@software{bueorm2026,
+  author = {Buenahora Ormaza, Gerson Fabián},
+  title = {Bueorm Model Maker: BDA, TBV, Transformer Hybrid Framework},
+  year = {2026},
+  url = {https://github.com/bueormnew/BMM}
+}
 ```
